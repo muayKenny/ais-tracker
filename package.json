@@ -1,0 +1,9 @@
+{
+  "name": "ais-tracker",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "dev:web": "pnpm --filter web dev",
+    "build:web": "pnpm --filter web build"
+  }
+}
