@@ -21,7 +21,7 @@ var DEFAULT_BOUNDING_BOX = [][]float64{
 }
 
 func Connect(ctx context.Context, apiKey string) error {
-	conn, _, err := websocket.DefaultDialer.Dial("wss://stream.aistream.io/vo/stream", nil)
+	conn, _, err := websocket.DefaultDialer.Dial("wss://stream.aisstream.io/v0/stream", nil)
 
 	if err != nil {
 		return err
