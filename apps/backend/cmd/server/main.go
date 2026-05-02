@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
+	"github.com/kenshef/ais-tracker/apps/backend/internal/config"
 	"github.com/kenshef/ais-tracker/apps/backend/internal/ingest"
 )
 
@@ -17,52 +15,9 @@ func healthHandle(writer http.ResponseWriter, response *http.Request) {
 	_, _ = writer.Write([]byte("ok now"))
 }
 
-func loadDotEnv(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-
-		return err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		key, value, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
-
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
-
-		if key == "" {
-			continue
-		}
-
-		if err := os.Setenv(key, value); err != nil {
-			return fmt.Errorf("set env %s: %w", key, err)
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func main() {
 	for _, path := range []string{".env", "apps/backend/.env"} {
-		if err := loadDotEnv(path); err != nil {
+		if err := config.LoadDotEnv(path); err != nil {
 			log.Fatal(err)
 		}
 	}
