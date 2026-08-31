@@ -3,7 +3,6 @@ package ingest
 import (
 	"context"
 	"log"
-	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -47,12 +46,27 @@ func Connect(ctx context.Context, apiKey string) error {
 		default:
 		}
 
-		var msg map[string]any
-		if err := conn.ReadJSON(&msg); err != nil {
+		var raw rawMessage
+		if err := conn.ReadJSON(&raw); err != nil {
 			return err
 		}
 
-		log.Printf("got message: %+v", msg)
-		_ = time.Now()
+		if err := raw.Validate(); err != nil {
+			log.Printf("discarding invalid message: %v", err)
+			continue
+		}
+
+		if raw.MessageType != "PositionReport" {
+			log.Printf("got message: type=%s (no position payload)", raw.MessageType)
+			continue
+		}
+
+		pos, err := raw.PositionReport()
+		if err != nil {
+			log.Printf("discarding message: failed to decode position report: %v", err)
+			continue
+		}
+
+		log.Printf("got message: type=%s meta=%+v position=%+v", raw.MessageType, raw.MetaData, pos)
 	}
 }
