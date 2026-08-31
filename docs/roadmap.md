@@ -1,7 +1,7 @@
 # Roadmap
 
-**Current phase:** Phase 1 — Architecture Spike
-**Last updated:** 2026-08-28
+**Current phase:** Phase 0 — System Design
+**Last updated:** 2026-08-30
 
 This is the living plan for the project, phased as vertical slices. See
 [requirements.md](./requirements.md) for the full functional/non-functional
@@ -16,6 +16,34 @@ Conventions:
 - Once a phase starts, its tasks get broken down into GitHub Issues under
   a matching Milestone for day-to-day tracking. This file stays the
   narrative/status layer, not the ticket system.
+
+---
+
+## Phase 0: System Design
+
+**Status:** In progress
+**Goal:** Settle the abstract shape of the system — pipeline roles, data
+flow, and storage strawman — before building anything, so Phase 1 has a
+concrete architecture to prove out rather than being exploratory from
+scratch.
+
+**Tasks:**
+- [x] Define the abstract pipeline (external source → ingestion → current
+      state → distribution → presentation)
+- [x] Name the overall pattern and why (digital twin / last-write-wins
+      store / pub-sub distribution, not event sourcing)
+- [x] Strawman storage and concurrency decisions
+- [ ] Review/revise strawman decisions
+
+**Checkpoint:** [system-design.md](./system-design.md) captures the
+pipeline shape and the key architecture decisions, agreed on before
+Phase 1 work starts.
+
+**Notes:**
+- 2026-08-30: Considered event sourcing; ruled out because AIS position
+  reports are snapshots, not deltas — current state doesn't need to be a
+  projection of a replayable log. See system-design.md for the full
+  reasoning.
 
 ---
 
