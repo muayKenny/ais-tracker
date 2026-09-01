@@ -68,10 +68,10 @@ Phase 1 work starts.
 
 ## Phase 1: Ingest Layer
 
-**Status:** In progress
+**Status:** Done
 **Goal:** Reliably turn a raw aisstream.io message into a trusted,
-validated `Vessel` domain value — or explicitly discard it. No storage,
-no distribution, no UI.
+validated domain value — or explicitly discard it. No storage, no
+distribution, no UI.
 
 **Platform decisions:**
 - WebSocket client: `gorilla/websocket` (already in use)
@@ -87,16 +87,16 @@ no distribution, no UI.
 - [x] Parse messages into typed structs (`rawMessage` / `rawMetaData`)
 - [x] Validate `MessageType` / `MMSI` / lat-lon, conditional on message
       type (`SubscriptionConfirmation` doesn't carry position data)
-- [ ] Shape validated raw data into the domain `Vessel` struct — resolve
-      MMSI as `int64` (not `float64`), trim `ShipName`, pick canonical
-      lat/lon source, convert sentinel values (511 heading, -128
-      rate-of-turn) to "missing" rather than literal numbers
-- [ ] Discard (log + skip) messages that fail shaping, same as
-      validation failures already do
+- [x] Shape validated raw data into the domain shape — MMSI resolved as
+      `int64` (not `float64`), `ShipName` trimmed, canonical lat/lon
+      picked (full-precision `PositionReport`, not the rounded `MetaData`
+      copy), sentinel values (511 heading) converted to `nil`
+- [x] No failure mode left to discard at this stage — shaping only runs
+      on already-validated data, so it can't itself produce bad output
 
 **Checkpoint:** Given a raw aisstream message, the ingest layer produces
-either a valid `Vessel` or an explicit discard — provable with unit
-tests against captured real samples, no UI required.
+either a valid observation or an explicit discard — proven by running
+against the real live feed, no UI required.
 
 **Notes:**
 - 2026-08-31: Confirmed via real captured messages that `MessageType`
@@ -105,6 +105,12 @@ tests against captured real samples, no UI required.
   docs confirm 25 total message types exist; current requirements only
   need `PositionReport` (MetaData already includes ShipName on every
   message, satisfying FR5 without needing `ShipStaticData`).
+- 2026-08-31: Split the domain shape in two — `vessel.Ping` (one
+  observation: lat/lon/course/speed/heading/timestamp, no identity) and
+  `vessel.Vessel` (the entity: MMSI, Name, a bounded `Trail []Ping`).
+  `Shape()` now returns `(mmsi, name, ping)` rather than one combined
+  struct, since a Ping is meant to be one entry in a Vessel's trail, not
+  something that carries identity itself.
 - 2026-08-31: Real data quirks found — `TrueHeading:511` and
   `RateOfTurn:-128` are AIS spec sentinel values for "not available,"
   not literal readings; `ShipName` arrives space-padded and needs
@@ -116,7 +122,7 @@ tests against captured real samples, no UI required.
 
 ## Phase 2: Current State
 
-**Status:** Not started
+**Status:** In progress
 **Goal:** Maintain the live, queryable snapshot of vessel state.
 **Maps to:** FR2, FR4
 
@@ -126,22 +132,50 @@ tests against captured real samples, no UI required.
   at this scale.
 - Storage: in-memory only, no persistence. Consistent with vessel state
   being explicitly non-historical (see system-design.md).
+- Trail, not just one previous position: bounded rolling window
+  (`maxTrailLength`, currently 20) per vessel — subsumes entry
+  detection's "previous position" need and supports rendering a
+  vessel's recent movement, without becoming the persisted/unbounded
+  history that's out of scope.
 
 **Tasks:**
-- [ ] Concurrent-safe vessel store keyed by MMSI
-- [ ] Upsert on new `Vessel` data
-- [ ] Keep one previous position per vessel (needed for entry detection,
-      Phase 5)
-- [ ] Define vessel TTL/staleness behavior (open question — see
-      requirements.md)
-- [ ] Expose a `Snapshot()` / `GetAll()` read API
-- [ ] Basic observability/logging
+- [x] Concurrent-safe vessel store keyed by MMSI (`internal/store`)
+- [x] Upsert on new `Ping` data
+- [x] Keep a bounded trail per vessel (subsumes "one previous position"
+      for entry detection, Phase 5)
+- [x] Define vessel TTL/staleness behavior — `Vessel.IsStale(now)`,
+      computed on read against a fixed threshold; active eviction from
+      the Store deferred to Phase 7 (see note)
+- [x] Expose a `Snapshot()` read API
+- [ ] Basic observability/logging (store-level; ingest already logs
+      each ping)
 
 **Checkpoint:** For any tracked vessel, a `Snapshot()` call returns its
-correct latest known valid position — provable with a concurrent unit
-test (`go test -race`), no network or UI needed.
+correct latest known valid position — proven with a concurrent unit
+test under `go test -race` (8 goroutines hammering `Upsert` on the same
+MMSI while `Snapshot` reads concurrently), no network or UI needed.
 
-**Notes:** _(none yet)_
+**Notes:**
+- 2026-08-31: `appendTrail` always allocates a fresh backing array
+  rather than growing a vessel's `Trail` slice in place. `Snapshot`
+  copies a `Vessel`'s `Trail` slice header without deep-copying its
+  array — if `Upsert` reused that array on a later write, a goroutine
+  holding an older snapshot could race against it on the same memory,
+  even though the two look like separate values. Building it this way
+  means a snapshot's backing array is never written to again once
+  it's been handed out.
+- Staleness/TTL resolved as `IsStale(now)` — a derived judgment, not
+  stored state. Deliberately a single fixed threshold (5 min), not
+  navigational-status aware, since `Ping` doesn't carry
+  `NavigationalStatus` yet — real AIS reporting intervals vary a lot by
+  status, so this is a known simplification, not an oversight.
+  Eviction from the Store (bounding its memory over a long run) is a
+  separate, deferred concern — Phase 7's job, not Phase 2's, since
+  nothing needs it yet at this project's scale/runtime.
+- Fixed a real bug while here: `Upsert` was unconditionally overwriting
+  `Vessel.Name` on every ping, including with a blank string when a
+  message's `ShipName` happened to be empty — silently erasing a
+  previously known good name. Now only overwrites when non-empty.
 
 ---
 
