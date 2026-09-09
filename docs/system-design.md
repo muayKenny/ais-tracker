@@ -1,7 +1,7 @@
 # System Design
 
 **Status:** Draft — Phase 0
-**Last updated:** 2026-08-30
+**Last updated:** 2026-09-01
 
 ## What this is
 
@@ -83,6 +83,14 @@ until someone does:
 - **Distribution:** a broadcast hub — ingest writes an update, a hub
   goroutine fans it out to every connected WebSocket client. Standard
   pub/sub fan-out, no persistence in the pipe itself.
+- **Serving the frontend:** the same Go binary serves it, no separate
+  static host/CDN. Vite's job ends at `vite build` — producing a static
+  `dist/` folder — it's not a production server. The backend serves
+  those files directly (`http.FileServer`, same `mux` as `/health`,
+  `/ws`, `/api`), consistent with the single-box, one-process,
+  low-cost NFR — a separate static host (Netlify/Vercel/S3+CloudFront)
+  would add a second deployment target and CORS config for a scale
+  benefit this project doesn't need.
 
 ## Where we are now
 

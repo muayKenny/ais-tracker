@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/kenshef/ais-tracker/apps/backend/internal/api"
 	"github.com/kenshef/ais-tracker/apps/backend/internal/config"
 	"github.com/kenshef/ais-tracker/apps/backend/internal/ingest"
 	"github.com/kenshef/ais-tracker/apps/backend/internal/store"
@@ -21,7 +22,7 @@ func healthHandle(writer http.ResponseWriter, response *http.Request) {
 // callback passed into ingest. Meant to be run on its own goroutine via
 // `go runIngest(...)`, since it blocks reading from conn.Pings until the
 // connection ends.
-func runIngest(apiKey string, vesselStore *store.Store) {
+func runIngest(apiKey string, vesselStore *store.Store, connectionHub *api.Hub) {
 	conn, err := ingest.Connect(context.Background(), apiKey)
 	if err != nil {
 		log.Printf("aisstream connect failed: %v", err)
@@ -30,6 +31,7 @@ func runIngest(apiKey string, vesselStore *store.Store) {
 
 	for p := range conn.Pings {
 		vesselStore.Upsert(p.MMSI, p.Name, p.Ping)
+		connectionHub.Broadcast(api.Update{MMSI: p.MMSI, Name: p.Name, Ping: p.Ping})
 	}
 
 	if err := conn.Err(); err != nil {
@@ -45,14 +47,16 @@ func main() {
 	}
 
 	vesselStore := store.New()
+	connectionHub := api.NewHub()
 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", healthHandle)
+	mux.HandleFunc("/ws", api.NewHandler(connectionHub, vesselStore))
 
 	if apiKey := os.Getenv("AISSTREAM_API_KEY"); apiKey != "" {
 		log.Println("starting aisstream ingest")
-		go runIngest(apiKey, vesselStore)
+		go runIngest(apiKey, vesselStore, connectionHub)
 	} else {
 		log.Println("AISSTREAM_API_KEY not set; skipping ingest")
 	}
