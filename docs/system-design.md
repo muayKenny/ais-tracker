@@ -1,7 +1,7 @@
 # System Design
 
 **Status:** Draft — Phase 0
-**Last updated:** 2026-09-01
+**Last updated:** 2026-09-09
 
 ## What this is
 
@@ -23,10 +23,10 @@ can just *be* the source of truth.
 ```mermaid
 flowchart LR
     A["External Source<br/>aisstream.io"]:::done
-    B["Ingestion<br/>parse, validate, shape"]:::partial
-    C["Current State<br/>latest position per vessel"]:::todo
-    D["Distribution<br/>broadcast hub"]:::todo
-    E["Presentation<br/>map UI"]:::todo
+    B["Ingestion<br/>parse, validate, shape"]:::done
+    C["Current State<br/>latest position per vessel"]:::done
+    D["Distribution<br/>broadcast hub"]:::done
+    E["Presentation<br/>map UI"]:::partial
 
     A --> B --> C --> D --> E
 
@@ -68,21 +68,30 @@ flowchart LR
     classDef todo fill:#e0e0e0,stroke:#888888,color:#333333
 ```
 
-## Strawman decisions
+## Decisions
 
-These are first-pass, concrete calls — easy to argue with, not load-bearing
-until someone does:
+Built and proven, not just proposed, unless noted otherwise:
 
 - **Current state store:** in-memory, keyed by MMSI, one writer (ingest)
   and many readers (every connected client). A `sync.RWMutex`-guarded map
-  is enough at this scale — no need for a channel-owned actor pattern.
+  — no channel-owned actor pattern needed at this scale. Trail entries
+  use a fresh-allocation-on-append strategy so a `Snapshot()` reader can
+  never race a concurrent `Upsert` on the same backing array. Race-tested
+  (`go test -race`).
+- **Ingestion API:** `ingest.Connect` returns a `*Connection` (a `Pings`
+  channel + `Err()`), not a callback — the wiring from ingest's output to
+  its consumers (`Store.Upsert`, `Hub.Broadcast`) is a visible loop in
+  `main.go`, not threaded invisibly through a passed-in function.
+- **Distribution:** a broadcast hub (`internal/api`) — a mutex-guarded
+  set of connected clients, one goroutine per client (write loop +
+  disconnect-detecting read loop), `Broadcast` skips a client whose
+  buffer is full rather than blocking on it. Race-tested. Verified live
+  against the real feed via a raw WebSocket client (`wscat`), not just
+  in isolation.
 - **Persistence, when it shows up (Phase 4/5 — regions, recent events):**
-  SQLite, not Postgres. Nothing here needs multi-writer concurrency or a
-  separate DB process; SQLite is zero-ops and fits the single-box,
-  low-cost deployment NFR directly.
-- **Distribution:** a broadcast hub — ingest writes an update, a hub
-  goroutine fans it out to every connected WebSocket client. Standard
-  pub/sub fan-out, no persistence in the pipe itself.
+  still a strawman — SQLite, not Postgres. Nothing here needs
+  multi-writer concurrency or a separate DB process; SQLite is zero-ops
+  and fits the single-box, low-cost deployment NFR directly.
 - **Serving the frontend:** the same Go binary serves it, no separate
   static host/CDN. Vite's job ends at `vite build` — producing a static
   `dist/` folder — it's not a production server. The backend serves
@@ -91,15 +100,23 @@ until someone does:
   low-cost NFR — a separate static host (Netlify/Vercel/S3+CloudFront)
   would add a second deployment target and CORS config for a scale
   benefit this project doesn't need.
+- **Presentation:** MapLibre GL, not a custom three.js/WebGPU renderer —
+  see roadmap.md Phase 8 for the full reasoning (industry-standard for
+  this exact use case, built-in clustering and globe projection, and
+  the custom-rendering skill this would have demonstrated is already
+  covered elsewhere). A Web Worker owns the WebSocket connection and
+  batches updates before handing them to the main thread — that's
+  where the concurrency/performance work actually applies, since
+  MapLibre's own rendering isn't something to inject custom code into.
 
 ## Where we are now
 
 - **External source:** connected — `ingest.go` holds a live WS connection
   to aisstream.io.
-- **Ingestion:** partial — raw messages are received and logged, but not
-  yet parsed into a typed `Vessel` struct or validated. This is the
-  current gap (Phase 2).
-- **Current state:** not built yet.
-- **Distribution:** not built yet.
-- **Presentation:** not built yet (frontend is still the unmodified Vite
-  template).
+- **Ingestion:** done — typed, validated, shaped into `vessel.Ping` +
+  identity. Known gap: no reconnect on failure yet (Phase 7).
+- **Current state:** done — `internal/store`, race-tested.
+- **Distribution:** done — `internal/api` (WebSocket hub), race-tested
+  and verified live.
+- **Presentation:** design settled (MapLibre GL + Worker-based data
+  pipeline), no code yet — this is the active phase (Phase 8).

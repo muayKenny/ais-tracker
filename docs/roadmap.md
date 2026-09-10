@@ -1,7 +1,8 @@
 # Roadmap
 
-**Current phase:** Phase 1 — Ingest Layer
-**Last updated:** 2026-08-31
+**Current phase:** Phase 8 — Frontend (design underway; Phases 4–7 deliberately
+deferred, see note below)
+**Last updated:** 2026-09-09
 
 This is the living plan for the project, phased by platform layer —
 backend built out fully, layer by layer, with frontend last — rather than
@@ -117,6 +118,16 @@ against the real live feed, no UI required.
   trimming; lat/lon appear twice (full precision under
   `Message.PositionReport`, rounded under `MetaData`) — canonical source
   still to be picked during shaping.
+- 2026-09-01: Reworked `ingest.Connect`'s API from a callback
+  (`OnPingFunc`, threaded through `Connect` → `runIngest` → whoever
+  passed it in) to returning a `*Connection` with a `Pings` channel and
+  an `Err()` method. Reason: the callback made the actual wiring
+  ("who handles a ping") untraceable by reading the code — you had to
+  chase an opaque parameter through three files to find `st.Upsert`.
+  The channel version makes it explicit and visible: `for p :=
+  range conn.Pings { vesselStore.Upsert(...) }`, read top to bottom in
+  `main.go`, no hidden indirection. `Err()` mirrors `bufio.Scanner`'s
+  shape — read until the channel closes, then check why.
 
 ---
 
@@ -181,27 +192,60 @@ MMSI while `Snapshot` reads concurrently), no network or UI needed.
 
 ## Phase 3: Distribution
 
-**Status:** Not started
+**Status:** Done (core loop). Reconnect/backpressure hardening still
+lives in Phase 7, not done here.
 **Goal:** Get current state out of the process to any connected
 consumer.
 
 **Platform decisions:**
 - Transport: WebSocket (mirrors the aisstream.io feed itself; push, not
   poll)
-- Fan-out: a broadcast hub — one goroutine owns the set of connected
-  clients, ingest writes an update, hub fans it out. Standard pub/sub
-  shape, no persistence in the pipe.
+- Fan-out: a broadcast hub — mutex-guarded set of `*Client`, one
+  goroutine per connected client (write loop + read loop, the latter
+  only used to detect disconnection), `Broadcast` skips a client whose
+  buffer is full rather than blocking on it.
+- Package: `internal/api` (not `internal/realtime` — a deliberate,
+  discussed call to also house future CRUD, e.g. Phase 4's regions
+  endpoints, in the same package rather than splitting client-facing
+  code across two).
+- Broadcast payload: latest ping only (MMSI, name, one `vessel.Ping`),
+  not the full `Vessel`/trail — a default, not a fully confirmed
+  decision, chosen to avoid re-sending trail history a client should
+  already have.
 
 **Tasks:**
-- [ ] WebSocket endpoint: send full snapshot on connect
-- [ ] Broadcast hub: push each update to all connected clients
-- [ ] Basic reconnect/backpressure handling
+- [x] WebSocket endpoint (`/ws`): sends full snapshot on connect
+      (`vesselStore.Snapshot()` + `Vessel.LastPing()`, one `Update` per
+      currently-tracked vessel)
+- [x] Broadcast hub: push each update to all connected clients
+- [ ] Basic reconnect/backpressure handling (client buffer overflow is
+      handled — see above — server-side reconnect after ingest failure
+      is Phase 7's job, still open)
 
-**Checkpoint:** A raw WebSocket client (`wscat`, or a browser devtools
-console) connecting to the endpoint receives a snapshot, then live
-updates — verified without any frontend UI.
+**Checkpoint:** A raw WebSocket client connecting to the endpoint
+receives a snapshot, then live updates — **verified for real**, not just
+tested in isolation: connected via `wscat -c ws://localhost:8080/ws`
+against the live server and watched real vessel `Update` messages
+stream in, including `"Heading":null` on vessels whose raw
+`TrueHeading` was the AIS 511 sentinel — confirming Phase 1's
+sentinel-to-nil handling is correct end to end, not just in isolation.
 
-**Notes:** _(none yet)_
+**Notes:**
+- 2026-09-01: `hub.go`/`client.go`/`handler.go` all race-tested
+  (`TestHubConcurrentRegisterBroadcast`, `go test -race`) — 8 goroutines
+  registering/unregistering/broadcasting concurrently, clean.
+- 2026-09-01: `ingest` still has no test coverage for the `Connection`/
+  `Err()` ordering (reasoning-only, relies on Go's memory model
+  guarantee that a channel close happens-after whatever was written
+  before it) — a known, deliberately deferred gap, not an oversight.
+- 2026-09-09: Decided to skip straight to Phase 8 (Frontend) rather
+  than working Phases 4–7 in order. Reasoning: Ingestion → Current
+  State → Distribution is already enough to render real, live data —
+  the portfolio/career payoff (see project practice-framing memory) is
+  concentrated in the rendering work, and Phases 4–7 (regions, entry
+  detection, event delivery, hardening) aren't prerequisites for that.
+  They're not abandoned, just deliberately out of sequence — worth
+  returning to once the frontend's real.
 
 ---
 
@@ -321,30 +365,68 @@ failures, and support expected v1 load.
 
 ## Phase 8: Frontend
 
-**Status:** Not started
-**Goal:** Build the UI on top of a fully proven backend. Deliberately
-last — this is the layer already well understood, so it should move
-fast once every backend contract it depends on already works.
+**Status:** In progress (design)
+**Goal:** Build the UI on top of a fully proven backend. Started ahead
+of Phases 4–7 on purpose (see Phase 3 note) — Ingestion, Current State,
+and Distribution are enough real data to build against.
 
 **Platform decisions:**
-- Map library: not yet decided (Leaflet vs. MapLibre GL vs. other) —
-  open until this phase starts.
+- Renderer: **MapLibre GL**, not a custom three.js/WebGPU engine.
+  Reasoning, decided after real back-and-forth: MapLibre is the actual
+  industry-standard choice for exactly this kind of app (real-time
+  tracking, GPU-batched rendering, not per-point DOM markers), it has
+  **clustering built directly into its GeoJSON source** (`cluster:
+  true`), and it already supports a globe projection — it solves both
+  the "thousands of points without slowing the browser" and "does this
+  look meaningful zoomed out" problems from Phase 0, for free, proven
+  at production scale. Deliberately *not* building a custom WebGPU
+  renderer for this project: that skill is already demonstrated
+  elsewhere, and duplicating it here would cost real project-completion
+  risk (a from-scratch rendering engine is a materially bigger,
+  higher-risk scope than this project's other phases) for a
+  redundant portfolio signal. MapLibre itself is a legitimate resume
+  signal — knowing when to use proven tooling instead of reinventing
+  it is a real engineering judgment, not a lesser one.
+- Concurrency/performance layer: a **Web Worker owns the WebSocket
+  connection** to `/ws` — receives and parses messages off the main
+  thread, and batches/coalesces updates over a short window before
+  handing a batch to the main thread (`postMessage`), rather than
+  triggering a MapLibre `source.setData(...)` call per individual
+  ping. This is where the Worker/concurrency skill set actually
+  applies here — MapLibre's own rendering is a black box you don't
+  get to inject into, but the live-data pipeline feeding it is fair
+  game, and batching is the real performance-sensitive operation once
+  many vessels update live.
+- Serving: same Go binary serves the built `dist/` — see
+  system-design.md's strawman decisions.
 
 **Tasks:**
-- [ ] World map view
-- [ ] Vessel markers, updated from the Phase 3 WebSocket stream
+- [ ] Thinnest possible slice first: render one ship's position from a
+      real WebSocket connection on a MapLibre map — same "walking
+      skeleton" approach used for the backend phases, no worker,
+      clustering, or globe projection yet
+- [ ] World map/globe view (MapLibre globe projection)
+- [ ] Vessel rendering as a clustered GeoJSON source, updated from the
+      Phase 3 WebSocket stream
+- [ ] Worker-based WebSocket client with update batching
 - [ ] Stale/active visual state
 - [ ] Select vessel / metadata panel
 - [ ] Connection status
 - [ ] Region creation UI (coordinate input or draw-on-map)
-- [ ] List/edit/delete regions (consumes Phase 4's API)
-- [ ] Event feed UI (consumes Phase 6's event stream)
-- [ ] Frontend performance with many markers
+- [ ] List/edit/delete regions (consumes Phase 4's API, once it exists)
+- [ ] Event feed UI (consumes Phase 6's event stream, once it exists)
 - [ ] Basic filtering, if needed
 
-**Checkpoint:** A user can open the app, see live vessel positions,
-select one, define and manage watched regions, and see region-entry
-events — the full FR1–9 experience, on a backend that was already
-independently proven at every layer.
+**Checkpoint:** A user can open the app and see live vessel positions
+rendered from the real backend, at scale, smoothly. Region
+creation/event-feed UI checkpoints wait on Phases 4/6 actually
+existing.
 
-**Notes:** _(none yet)_
+**Notes:**
+- 2026-09-09: Considered a custom three.js/React-Three-Fiber/WebGPU
+  renderer first (globe, `InstancedMesh`, hand-built clustering).
+  Reconsidered after weighing it against MapLibre GL specifically —
+  see Platform decisions above for the full reasoning. This also
+  resolves the contradiction with requirements.md's Out of Scope list
+  ("Custom WebGPU or globe-based rendering") — no longer a
+  contradiction, since that's genuinely no longer the plan.

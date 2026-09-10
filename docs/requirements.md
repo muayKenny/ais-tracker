@@ -65,15 +65,16 @@ maritime activity in near real time.
 - **Geofence shape (FR6):** Are watched regions arbitrary polygons, or
   simple boxes/circles? Boxes would mirror the bounding-box model
   aisstream.io already uses for the ingest subscription.
-- **Entry detection needs one step of history (FR7/FR8):** Detecting that
-  a ship *entered* a region (vs. is merely *currently inside* it)
-  requires comparing the current position to the immediately-prior one.
-  This is a single previous-position lookup per vessel, not historical
-  tracking/playback, and doesn't conflict with the out-of-scope item —
-  but it should be named explicitly so the system is built to support it.
-- **Staleness/expiry (FR4):** What happens to a ship's marker when no new
-  observation arrives for a while — does it disappear, freeze in place,
-  or gray out after some TTL?
+- ~~**Entry detection needs one step of history (FR7/FR8)**~~ —
+  **Resolved 2026-09-01.** `vessel.Vessel.Trail` (a bounded rolling
+  window of recent `Ping`s) covers this and more — the immediately-prior
+  position is just `Trail[len(Trail)-2]`.
+- ~~**Staleness/expiry (FR4)**~~ — **Resolved 2026-09-01.**
+  `vessel.Vessel.IsStale(now)`, a derived judgment computed on read
+  against a fixed 5-minute threshold — not navigational-status aware
+  yet (real AIS reporting intervals vary a lot by status), a known
+  simplification. Nothing evicts a stale vessel from the store; that's
+  a separate, deferred concern (Phase 7).
 - **Region-entry event delivery mechanism (FR9):** Push (e.g. WebSocket)
   or poll? This mirrors the general ship-state delivery mechanism
   decision but is worth confirming applies the same way to events.
