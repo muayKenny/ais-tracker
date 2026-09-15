@@ -29,6 +29,13 @@ func runIngest(apiKey string, vesselStore *store.Store, connectionHub *api.Hub) 
 		return
 	}
 
+	// When any client's view moves, re-point the upstream subscription at
+	// whatever everyone is currently looking at. Subscribe is throttled
+	// internally, so this can fire as often as clients pan.
+	connectionHub.OnViewportChange = func() {
+		conn.Subscribe(connectionHub.BoundingBoxes())
+	}
+
 	for p := range conn.Pings {
 		vesselStore.Upsert(p.MMSI, p.Name, p.Ping)
 		connectionHub.Broadcast(api.Update{MMSI: p.MMSI, Name: p.Name, Ping: p.Ping})
