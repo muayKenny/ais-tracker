@@ -30,6 +30,8 @@ maritime activity in near real time.
    - a specific ship entering a watched region
 9. The system shall expose newly detected region-entry events to the user
    in near real time.
+10. The system shall allow a user to replay a ship's historical movement
+    over a selected time range.
 
 ## Non-Functional Requirements
 
@@ -46,18 +48,31 @@ maritime activity in near real time.
 5. The system should keep infrastructure and runtime costs low enough for
    personal development and small-scale deployment.
 
+## Infrastructure and Learning Constraints
+
+Agreed 2026-09-16: use Docker, TimescaleDB, and AWS to gain practical experience
+with time-series databases and modern backend deployment. Local development
+uses Docker Compose; production uses ECS Fargate for the Go application and
+Docker on EC2 with persistent EBS storage for TimescaleDB. Define AWS resources
+with CDK in TypeScript. Use ECR, CloudWatch, Secrets Manager, and S3 database
+backups. See [system-design.md](./system-design.md) for the deployment plan.
+These choices are agreed, not yet implemented.
+
 ## Out of Scope
 
 - Satellite tracking
 - Flight tracking
-- Historical tracking or playback of ship movement
 - Multi-source AIS data reconciliation
 - SMS, email, or external notification delivery
-- Multi-region or distributed cloud deployment
+- Multi-region deployment and automatic cross-instance scaling in v1
 - Custom WebGPU or globe-based rendering
 - Advanced analytics (route prediction, anomaly detection, etc.)
 
 ## Open Questions
+
+- **Replay retention and coverage (FR10):** How long should observations be
+  retained, and do we record every tracked ship or a selected subset? Playback
+  is limited to observations actually collected and retained.
 
 - **Accounts/persistence for watched regions (FR6):** Do watched regions
   belong to a user account (requires auth + a DB-backed store), or are

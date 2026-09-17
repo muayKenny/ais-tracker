@@ -1,0 +1,42 @@
+name: ais-tracker-local
+
+services:
+  db:
+    image: timescale/timescaledb:2.25.1-pg17
+    # Use the documented x86 image consistently, including via Docker Desktop
+    # emulation on Apple Silicon. Revisit for a native production image.
+    platform: linux/amd64
+    environment:
+      POSTGRES_DB: ais_tracker
+      POSTGRES_USER: ais
+      POSTGRES_PASSWORD: local_dev_only
+      TIMESCALEDB_TELEMETRY: "off"
+      TS_TUNE_MEMORY: 512MB
+      TS_TUNE_NUM_CPUS: "1"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ais -d ais_tracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile.local
+    environment:
+      AISSTREAM_API_KEY: ${AISSTREAM_API_KEY:-}
+      # Reserved for the upcoming persistence implementation; not read yet.
+      DATABASE_URL: postgres://ais:local_dev_only@db:5432/ais_tracker?sslmode=disable
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  timescale_data:

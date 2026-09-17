@@ -1,8 +1,9 @@
 # Roadmap
 
 **Current phase:** Phase 8 — Frontend (design underway; Phases 4–7 deliberately
-deferred, see note below)
-**Last updated:** 2026-09-09
+deferred, see note below). Next backend milestone: persistent history (Phase 3a).
+
+**Last updated:** 2026-09-16
 
 This is the living plan for the project, phased by platform layer —
 backend built out fully, layer by layer, with frontend last — rather than
@@ -53,7 +54,8 @@ Phase 1 work starts.
 - 2026-08-30: Considered event sourcing; ruled out because AIS position
   reports are snapshots, not deltas — current state doesn't need to be a
   projection of a replayable log. See system-design.md for the full
-  reasoning.
+  reasoning. Superseded in part on 2026-09-16: FR10 now requires persisted
+  observations for playback, while full event sourcing remains unnecessary.
 - 2026-08-31: Switched from an end-to-end vertical spike to a
   platform-layered plan — fully build and prove out each backend layer
   before moving to the next, frontend last. Reasoning: this is also a
@@ -141,13 +143,13 @@ against the real live feed, no UI required.
 - Concurrency: `sync.RWMutex`-guarded map keyed by MMSI — one writer
   (ingest), many readers. No channel-owned actor pattern; not justified
   at this scale.
-- Storage: in-memory only, no persistence. Consistent with vessel state
-  being explicitly non-historical (see system-design.md).
+- Live state storage: in-memory. Durable replay history is separate, in
+  TimescaleDB (Phase 3a; see system-design.md).
 - Trail, not just one previous position: bounded rolling window
   (`maxTrailLength`, currently 20) per vessel — subsumes entry
   detection's "previous position" need and supports rendering a
-  vessel's recent movement, without becoming the persisted/unbounded
-  history that's out of scope.
+  vessel's recent movement. This bounded trail does not replace the
+  persistent history required by FR10.
 
 **Tasks:**
 - [x] Concurrent-safe vessel store keyed by MMSI (`internal/store`)
@@ -249,6 +251,44 @@ sentinel-to-nil handling is correct end to end, not just in isolation.
 
 ---
 
+## Phase 3a: Persistent History and Replay API
+
+**Status:** Not started — next backend milestone
+**Goal:** Record observations durably and retrieve a vessel's movement over a
+selected time range (FR10), before building playback controls.
+
+**Platform decisions:**
+- TimescaleDB from the start; no temporary in-memory history implementation.
+- Docker Compose for the local Go backend and database, with persistent storage.
+- An observations hypertable partitioned by observation time, indexed for
+  vessel/time-range queries. Keep the existing live store and short trail.
+
+**Tasks:**
+- [x] Add local Docker Compose setup with a pinned TimescaleDB version
+- [ ] Run the local setup and verify container startup and persistent storage
+- [ ] Add schema migrations and the observations hypertable
+- [ ] Define observation vs. receipt timestamps, including upstream-time fallback
+- [ ] Persist validated observations; define duplicate and write-failure handling
+- [ ] Handle late observations without regressing the latest live position
+- [ ] Add a bounded, paginated history API ordered by observation time
+- [ ] Verify observations survive database/container restarts
+- [ ] Decide capture scope and retention period; configure retention accordingly
+- [ ] Evaluate compression for older observations as a time-series learning task
+
+**Checkpoint:** Ingest observations, restart the database, then retrieve one
+vessel's recorded positions over a selected time range. Replay covers only
+observations actually collected and retained.
+
+**Notes:**
+- 2026-09-16: Time-series database experience is an explicit learning goal.
+  This phase supersedes the earlier assumption that historical tracking was
+  out of scope. AWS deployment follows the history API; see Phase 7.
+- 2026-09-16: Added Compose, a local backend Dockerfile, and the
+  [local setup guide](./local-development.md). Compose configuration validates;
+  container startup and the persistence check have not been run yet.
+
+---
+
 ## Phase 4: Watched Regions (backend)
 
 **Status:** Not started
@@ -256,9 +296,8 @@ sentinel-to-nil handling is correct end to end, not just in isolation.
 no creation UI yet, that's Phase 8.
 
 **Platform decisions:**
-- Persistence: SQLite, not Postgres — zero-ops, fits the single-box/
-  low-cost deployment NFR, no multi-writer concurrency needed at this
-  scale.
+- Persistence: ordinary PostgreSQL tables in the TimescaleDB database
+  introduced in Phase 3a; no separate SQLite store.
 - Region shape: boxes/circles for v1, not arbitrary polygons, mirroring
   the bounding-box model aisstream.io's own subscription already uses.
 - Accounts: still an open question (see requirements.md) — resolve
@@ -267,7 +306,7 @@ no creation UI yet, that's Phase 8.
 
 **Tasks:**
 - [ ] Server-side region model
-- [ ] Persist regions (SQLite)
+- [ ] Persist regions (PostgreSQL tables in TimescaleDB)
 - [ ] CRUD API (create/list/edit/delete) — testable via `curl`
 - [ ] Validate region coordinates
 
@@ -292,8 +331,7 @@ current position inside region
 
 **Platform decisions:**
 - Detection state: reuses Phase 2's one-previous-position tracking —
-  no separate history/log needed (see system-design.md's delta-vs-
-  snapshot reasoning).
+  entry detection does not require reading the persistent replay history.
 
 **Tasks:**
 - [ ] Evaluate position against regions using the previous/current pair
@@ -342,8 +380,13 @@ few seconds of a real crossing — verified without a frontend.
 **Goal:** Make the backend reliable enough for v1, unattended.
 
 **Platform decisions:**
-- Deployment target: single small VPS/box, Docker Compose — matches the
-  low-cost NFR; no managed/multi-region infrastructure.
+- Application: Docker image in ECR, running on ECS Fargate in one AWS region.
+- Initially one Go application task; replicas need ingestion/state coordination.
+- Database: TimescaleDB in Docker on EC2, using a separate persistent EBS volume.
+- Infrastructure: AWS CDK in TypeScript. Docker Compose is for local development.
+- Operations: CloudWatch, Secrets Manager, and database backups to S3.
+- We own database upgrades and recovery; no database high availability in v1.
+  See system-design.md for storage lifecycle and deployment rationale.
 
 **Tasks:**
 - [ ] Upstream reconnect/retry (the real gap flagged back in Phase 1 —
@@ -352,7 +395,11 @@ few seconds of a real crossing — verified without a frontend.
 - [ ] Logging and metrics
 - [ ] Error handling
 - [ ] Load test assumptions
-- [ ] Deploy setup
+- [ ] Define AWS infrastructure in CDK (networking, access rules, ECR, ECS,
+      EC2/EBS, CloudWatch, Secrets Manager, and S3 backups)
+- [ ] Protect database storage across redeployments and instance replacement
+- [ ] Configure database backups and verify restoration
+- [ ] Automate image builds and deployments after the first CDK deployment
 - [ ] Cost review
 - [ ] Rollback plan
 
@@ -412,6 +459,8 @@ and Distribution are enough real data to build against.
 - [ ] Stale/active visual state
 - [ ] Select vessel / metadata panel
 - [ ] Connection status
+- [ ] Replay UI: ship/time-range selection, play/pause, scrubbing, speed, and
+      return to live; show reporting gaps (depends on Phase 3a)
 - [ ] Region creation UI (coordinate input or draw-on-map)
 - [ ] List/edit/delete regions (consumes Phase 4's API, once it exists)
 - [ ] Event feed UI (consumes Phase 6's event stream, once it exists)
